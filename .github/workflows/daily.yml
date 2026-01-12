@@ -3,8 +3,8 @@ name: Daily Stock AI Report (BJT 12:00 & 16:00 + Telegram DM)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 4 * * *"   # 12:00 北京时间
-    - cron: "0 8 * * *"   # 16:00 北京时间
+    - cron: "0 4 * * *"   # UTC 04:00 = BJT 12:00
+    - cron: "0 8 * * *"   # UTC 08:00 = BJT 16:00
 
 permissions:
   contents: write
@@ -31,56 +31,71 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Run script
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SYMBOL: "600970"
         run: |
+          # 确保 reports 目录存在，避免后续报错
+          mkdir -p reports
           python main.py
 
       - name: Commit and push reports (rebase-safe)
         run: |
-          set -e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
+          
           git add reports/
-          git status
-
-          git commit -m "chore: daily report" || echo "No changes to commit"
-
-          git pull --rebase origin main
-          git push origin HEAD:main
+          
+          # 检查是否有变更，没有变更则不提交
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: daily report $(date +'%Y-%m-%d')"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
 
       - name: Notify Telegram (DM)
+        if: success() # 只有前面的步骤成功才执行
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
           set -e
+          
+          # 安全地查找最新的 md 文件，如果没有找到不会报错退出
+          REPORT_FILE=$(ls -1t reports/*.md 2>/dev/null | head -n 1 || true)
+          
+          if [ -z "$REPORT_FILE" ]; then
+            echo "::warning::没有找到报告文件，跳过 Telegram 通知。"
+            exit 0
+          fi
 
-          REPORT_FILE=$(ls -1t reports/*.md | head -n 1)
+          echo "Found report: $REPORT_FILE"
 
           TITLE=$(head -n 1 "$REPORT_FILE" | sed 's/^#\+\s*//g' | xargs || true)
           if [ -z "$TITLE" ]; then TITLE="Daily Stock AI Report"; fi
 
-          # 取前80行做摘要（避免消息过长）
-          head -n 80 "$REPORT_FILE" > /tmp/summary.txt
+          # 取前 50 行做摘要，防止超出 Telegram 字符限制 (4096字符)
+          # 使用 head -c 限制字节数更安全，预留一些空间给标题
+          SUMMARY=$(head -n 60 "$REPORT_FILE" | head -c 3500)
 
-          # 组装消息到文件（避免多行字符串破坏 YAML）
-          {
-            echo "$TITLE"
-            echo
-            echo "文件：$REPORT_FILE"
-            echo
-            echo "摘要（前80行）："
-            cat /tmp/summary.txt
-            echo
-            echo "Repo：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
-          } > /tmp/tg_message.txt
+          # 构建消息内容
+          MESSAGE="$TITLE
 
+          文件：$REPORT_FILE
+
+          摘要：
+          $SUMMARY
+          
+          ... (点击链接查看完整版)
+          Repo：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+
+          # 发送消息
           curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT_ID}" \
-            --data-urlencode text@/tmp/tg_message.txt
+            -d parse_mode="HTML" \
+            --data-urlencode text="$MESSAGE"
