@@ -7,9 +7,10 @@ import pandas as pd
 import akshare as ak
 import mplfinance as mpf
 from openai import OpenAI
+import numpy as np  # 引入 numpy 处理 NaN
 
 # ==========================================
-# 1. 数据获取模块
+# 1. 数据获取模块 (含自动清洗修复)
 # ==========================================
 
 def fetch_a_share_minute(symbol: str) -> pd.DataFrame:
@@ -36,11 +37,31 @@ def fetch_a_share_minute(symbol: str) -> pd.DataFrame:
     }
     df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
     
+    # 类型转换
     df["date"] = pd.to_datetime(df["date"])
-    df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
+    cols = ["open", "high", "low", "close", "volume"]
+    df[cols] = df[cols].astype(float)
     
+    # === 核心优化：修复 Open=0 的异常数据 ===
+    # 现象：非当天数据有时 Open 会显示为 0
+    # 逻辑：将 0 替换为上一根 K 线的 Close
+    if (df["open"] == 0).any():
+        zero_count = (df["open"] == 0).sum()
+        print(f"   [数据清洗] 检测到 {zero_count} 条 Open=0 的异常数据，正在用前收盘价修复...")
+        
+        # 1. 将 0 替换为 NaN，方便后续处理
+        df["open"] = df["open"].replace(0, np.nan)
+        
+        # 2. 使用 shift(1) 获取上一行的 close，填补 NaN
+        df["open"] = df["open"].fillna(df["close"].shift(1))
+        
+        # 3. 如果第一行本身就是 0 (没有上一行)，则用当行的 close 兜底，防止画图报错
+        df["open"] = df["open"].fillna(df["close"])
+
+    # 截取所需长度
     bars_count = int(os.getenv("BARS_COUNT", 600))
     df = df.sort_values("date").tail(bars_count).reset_index(drop=True)
+    
     return df
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -50,7 +71,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ==========================================
-# 2. 本地绘图模块
+# 2. 本地绘图模块 (专业版)
 # ==========================================
 
 def generate_local_chart(symbol: str, df: pd.DataFrame, save_path: str):
@@ -59,20 +80,31 @@ def generate_local_chart(symbol: str, df: pd.DataFrame, save_path: str):
     plot_df = df.copy()
     plot_df.set_index("date", inplace=True)
 
-    mc = mpf.make_marketcolors(up='red', down='green', edge='i', wick='i', volume='in', inherit=True)
-    s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', y_on_right=True)
+    # 这里的颜色风格保持你之前确认过的专业版配置
+    mc = mpf.make_marketcolors(
+        up='#ff3333', down='#00b060', 
+        edge='inherit', wick='inherit', 
+        volume={'up': '#ff3333', 'down': '#00b060'},
+        inherit=True
+    )
+    s = mpf.make_mpf_style(
+        base_mpf_style='yahoo', 
+        marketcolors=mc, 
+        gridstyle=':', 
+        y_on_right=True
+    )
 
     apds = []
     if 'ma50' in plot_df.columns:
-        apds.append(mpf.make_addplot(plot_df['ma50'], color='orange', width=1.0))
+        apds.append(mpf.make_addplot(plot_df['ma50'], color='#ff9900', width=1.5))
     if 'ma200' in plot_df.columns:
-        apds.append(mpf.make_addplot(plot_df['ma200'], color='blue', width=1.2))
+        apds.append(mpf.make_addplot(plot_df['ma200'], color='#2196f3', width=2.0))
 
     try:
         mpf.plot(
             plot_df, type='candle', style=s, addplot=apds, volume=True,
-            title=f"Wyckoff Chart: {symbol}",
-            savefig=dict(fname=save_path, dpi=150, bbox_inches='tight'),
+            title=f"Wyckoff Setup: {symbol}",
+            savefig=dict(fname=save_path, dpi=200, bbox_inches='tight'),
             warn_too_much_data=2000
         )
         print(f"[OK] Chart saved to: {save_path}")
@@ -87,6 +119,7 @@ def get_prompt_content(symbol, df):
     """读取并填充 Prompt 模板"""
     prompt_template = os.getenv("WYCKOFF_PROMPT_TEMPLATE")
     
+    # 本地回退逻辑
     if not prompt_template and os.path.exists("prompt_secret.txt"):
         try:
             with open("prompt_secret.txt", "r", encoding="utf-8") as f:
@@ -105,40 +138,28 @@ def get_prompt_content(symbol, df):
                           .replace("{csv_data}", csv_data)
 
 def call_gemini_http(prompt: str) -> str:
-    """
-    使用 HTTP POST 直接调用 Gemini API
-    """
+    """使用 HTTP POST 直接调用 Gemini API (Gemini-3-Flash-Preview)"""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY not found")
 
-    # === 核心修改：默认模型改为 gemini-3-flash-preview ===
     model_name = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
     print(f"   >>> 尝试调用 Google Gemini (HTTP Direct: {model_name})...")
 
-    # 构建 REST API URL
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     
     headers = {'Content-Type': 'application/json'}
     data = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }],
-        "system_instruction": {
-            "parts": [{"text": "You are Richard D. Wyckoff. You follow strict Wyckoff logic."}]
-        },
-        "generationConfig": {
-            "temperature": 0.2
-        }
+        "contents": [{"parts": [{"text": prompt}]}],
+        "system_instruction": {"parts": [{"text": "You are Richard D. Wyckoff. You follow strict Wyckoff logic."}]},
+        "generationConfig": {"temperature": 0.2}
     }
 
-    # 发送请求
     resp = requests.post(url, headers=headers, json=data)
     
     if resp.status_code != 200:
         raise Exception(f"Gemini API Error {resp.status_code}: {resp.text}")
     
-    # 解析结果
     result = resp.json()
     try:
         return result['candidates'][0]['content']['parts'][0]['text']
@@ -152,7 +173,6 @@ def call_openai_official(prompt: str) -> str:
         raise ValueError("OPENAI_API_KEY not found")
         
     model_name = os.getenv("AI_MODEL", "gpt-4o")
-    
     print(f"   >>> 尝试调用 Official OpenAI ({model_name})...")
     
     client = OpenAI(api_key=api_key)
@@ -173,8 +193,6 @@ def ai_analyze_wyckoff(symbol: str, df: pd.DataFrame) -> str:
     if not prompt:
         return "错误：未找到 WYCKOFF_PROMPT_TEMPLATE，无法分析。"
 
-    # === 策略：首选 Gemini，失败后降级到 OpenAI ===
-    
     # 1. 尝试 Gemini
     try:
         return call_gemini_http(prompt)
@@ -197,7 +215,7 @@ def ai_analyze_wyckoff(symbol: str, df: pd.DataFrame) -> str:
 def main():
     symbol = os.getenv("SYMBOL", "600970") 
     
-    # 1. 获取数据
+    # 1. 获取数据 (含自动清洗)
     df = fetch_a_share_minute(symbol)
     if df.empty:
         print("!!!" * 10)
@@ -211,16 +229,16 @@ def main():
     os.makedirs("data", exist_ok=True)
     os.makedirs("reports", exist_ok=True)
 
-    # 2. 保存CSV
+    # 2. 保存CSV (此时数据已修复，无 Open=0)
     csv_path = f"data/{symbol}_1min_{ts}.csv"
     df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     print(f"[OK] CSV Saved: {csv_path}")
 
-    # 3. 本地绘图
+    # 3. 本地绘图 (此时绘图不会崩)
     chart_path = f"reports/{symbol}_chart_{ts}.png"
     generate_local_chart(symbol, df, chart_path)
 
-    # 4. AI 分析 (双通道)
+    # 4. AI 分析
     report_text = ai_analyze_wyckoff(symbol, df)
 
     # 5. 保存报告
