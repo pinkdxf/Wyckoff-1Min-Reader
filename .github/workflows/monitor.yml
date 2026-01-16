@@ -1,0 +1,56 @@
+name: Monitor Telegram for New Stocks
+
+on:
+  workflow_dispatch:      # 允许手动触发
+  schedule:
+    # UTC 1:00 - 9:00 = 北京时间 9:00 - 17:00 (每30分钟运行一次)
+    - cron: "*/30 1-9 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-monitor
+  cancel-in-progress: true
+
+jobs:
+  update-list:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          # 必须拉取最新代码，否则提交时会冲突
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Check Telegram Messages
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          python add_stock.py
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 检查 stock_list.txt 是否有变化
+          git add stock_list.txt
+          
+          if git diff --staged --quiet; then
+            echo "No new stocks added."
+          else
+            git commit -m "chore: update stock list from telegram"
+            git pull --rebase origin main
+            git push origin HEAD:main
+            echo "Successfully updated stock list."
+          fi
