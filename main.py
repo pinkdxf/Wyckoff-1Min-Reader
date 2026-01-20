@@ -138,8 +138,8 @@ def call_gemini_http(prompt: str) -> str:
 def call_openai_official(prompt: str) -> str:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key: raise ValueError("OPENAI_API_KEY missing")
-    model_name = deepseek-chat
-    base_url = https://api.deepseek.com
+    model_name = os.getenv("AI_MODEL", "deepseek-chat")
+    base_url = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
     print(f"   >>> OpenAI ({model_name})...")
     client = OpenAI(api_key=api_key,base_url=base_url)
     resp = client.chat.completions.create(
@@ -287,6 +287,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
