@@ -145,7 +145,7 @@ def call_openai_official(prompt: str) -> str:
     resp = client.chat.completions.create(
         model=model_name, 
         messages=[{"role": "system", "content": "You are Richard D. Wyckoff."}, {"role": "user", "content": prompt}],
-        temperature=0.2 
+        temperature=1.0 
     )
     return resp.choices[0].message.content
 
@@ -287,6 +287,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
