@@ -51,7 +51,7 @@ jobs:
           GEMINI_MODEL: "gemini-3-flash-preview"
           # OpenAI 配置
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          AI_MODEL: "gpt-4o"
+          #AI_MODEL: "gpt-4o"
           # 通用配置
           WYCKOFF_PROMPT_TEMPLATE: ${{ secrets.WYCKOFF_PROMPT_TEMPLATE }}
           SYMBOLS: "600970" # 如果 stock_list.txt 不存在，以此为默认值
