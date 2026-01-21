@@ -2,9 +2,9 @@ name: Daily Stock AI Report
 
 on:
   workflow_dispatch:      # 允许手动触发
-  schedule:
-    - cron: "0 4 * * *"   # UTC 04:00 = 北京时间 12:00 (午盘)
-    - cron: "15 7 * * *"  # UTC 07:15 = 北京时间 15:15 (收盘)
+#  schedule:
+#    - cron: "0 4 * * *"   # UTC 04:00 = 北京时间 12:00 (午盘)
+#    - cron: "15 7 * * *"  # UTC 07:15 = 北京时间 15:15 (收盘)
 
 permissions:
   contents: write
